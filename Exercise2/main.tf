@@ -3,13 +3,11 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-output "az" {
-  value = data.aws_availability_zones.available.all_availability_zones
-}
 
 locals {
   owner = "${var.client_name}-nclouds"
   account_id = data.aws_iam_account_alias.current.id
+  subnetcount = "${var.total_subnets}" != "0" ? "${var.total_subnets}" : "${length(data.aws_availability_zones.available.names)}"
 }
 
 resource "aws_vpc" "rbtvpc" {
@@ -22,21 +20,25 @@ resource "aws_vpc" "rbtvpc" {
 }
 
 resource "aws_subnet" "public" {
+  count      = local.subnetcount
+  #count      = var.total_subnets
   vpc_id     = aws_vpc.rbtvpc.id
-  cidr_block = cidrsubnet(var.vpc_cidr, 8, 1)
-  availability_zone = data.aws_availability_zones.available.all_availability_zones
+  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = "${data.aws_availability_zones.available.names[count.index]}"
   tags = {
-    Name = "${var.client_name}-${var.env}-public"
+    Name = "${var.client_name}-${var.env}-public-${count.index}"
     owner = local.owner
   }
-}
+} 
 
 resource "aws_subnet" "private" {
+  count      = local.subnetcount
+  #count      = var.total_subnets
   vpc_id     = aws_vpc.rbtvpc.id
-  cidr_block = cidrsubnet(var.vpc_cidr, 8, 2)
-  availability_zone = data.aws_availability_zones.available.all_availability_zones
+  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index + "${var.total_subnets}")
+  availability_zone = "${data.aws_availability_zones.available.names[count.index]}"
   tags = {
-    Name = "${var.client_name}-${var.env}-private"
+    Name = "${var.client_name}-${var.env}-private-${count.index}"
     owner = local.owner
   }
 }
@@ -61,7 +63,7 @@ resource "aws_eip" "rbtnat_ip" {
 
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.rbtnat_ip.id
-  subnet_id     = aws_subnet.public.id
+  subnet_id     = aws_subnet.public[0].id
 
   tags = {
     Name = "${var.client_name}-${var.env}-NATgw"
@@ -84,8 +86,12 @@ resource "aws_route_table" "public_rbt" {
 }
 
 resource "aws_route_table_association" "a1" {
-  subnet_id      = aws_subnet.public.id
+  count      = local.subnetcount
+  #count      = var.total_subnets
+  depends_on     = [ aws_subnet.public ]
   route_table_id = aws_route_table.public_rbt.id
+  subnet_id      = aws_subnet.public[count.index].id
+  
 }
 
 resource "aws_route_table" "private_rbt" {
@@ -102,9 +108,12 @@ resource "aws_route_table" "private_rbt" {
   }
 }
 
-resource "aws_route_table_association" "a3" {
-  subnet_id      = aws_subnet.private.id
+resource "aws_route_table_association" "a2" {
+  count      = local.subnetcount
+  #count      = var.total_subnets
+  depends_on     = [ aws_subnet.private ]
   route_table_id = aws_route_table.private_rbt.id
+  subnet_id      = aws_subnet.private[count.index].id
 }
 
 resource "aws_key_pair" "rbtkey" {
@@ -116,7 +125,7 @@ resource "aws_eip" "rbtec2_ip" {
   domain = "vpc"
 
   tags = {
-    Name = "${var.client_name}--${var.env}ec2_eip"
+    Name = "${var.client_name}-${var.env}ec2_eip"
     owner = local.owner
   }
 }
@@ -170,19 +179,13 @@ resource "aws_security_group" "rbtssh" {
 resource "aws_instance" "rbtec2" {
   ami               = "ami-03f65b8614a860c29"
   instance_type     = var.ec2_type
-  subnet_id         = aws_subnet.public.id
+  subnet_id         = aws_subnet.public[0].id
   key_name          = aws_key_pair.rbtkey.id
   vpc_security_group_ids = [aws_security_group.rbtssh.id]
     tags = {
     Name = "${var.client_name}-ec2"
     owner = local.owner
   }
-}
-
-output "ec2hostid" {
-  value = "aws_instance.rbtec2.host_id"
-  description = "Instance ID"
-  depends_on = [ aws_instance.rbtec2 ]
 }
 
 resource "aws_eip_association" "eip_assoc" {
@@ -192,8 +195,7 @@ resource "aws_eip_association" "eip_assoc" {
 
 resource "aws_db_subnet_group" "rtsubgroup" {
   name       = "main"
-  subnet_ids = [aws_subnet.private.id]
-
+  subnet_ids = aws_subnet.private.*.id
   tags = {
     Name = "My ${var.client_name}-DB subnet group"
     owner = local.owner
@@ -201,8 +203,9 @@ resource "aws_db_subnet_group" "rtsubgroup" {
 }
 
 resource "aws_db_instance" "rbtrds" {
-  identifier             = "${var.client_name}-${var.env}-rds"
-  allocated_storage    = 20
+  count                = var.env == "prod" ? 1 : 0
+  identifier           = "${var.client_name}-${var.env}-rds"
+  allocated_storage    = var.env == "dev" ? 20 : 50
   db_name              = "mydb"
   engine               = "mysql"
   engine_version       = "5.7"
@@ -217,4 +220,18 @@ resource "aws_db_instance" "rbtrds" {
     Name = "${var.client_name}-RDS"
     owner = local.owner
   }
+}
+
+output "ec2hostid" {
+  value = "aws_instance.rbtec2.host_id"
+  description = "Instance ID"
+  depends_on = [ aws_instance.rbtec2 ]
+}
+
+output "az" {
+  value = data.aws_availability_zones.available.names
+}
+
+output "az_counts" {
+  value = length(data.aws_availability_zones.available.names)
 }
