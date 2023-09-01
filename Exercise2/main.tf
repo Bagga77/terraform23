@@ -35,7 +35,7 @@ resource "aws_subnet" "private" {
   count      = local.subnetcount
   #count      = var.total_subnets
   vpc_id     = aws_vpc.rbtvpc.id
-  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index + "${var.total_subnets}")
+  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index + local.subnetcount)
   availability_zone = "${data.aws_availability_zones.available.names[count.index]}"
   tags = {
     Name = "${var.client_name}-${var.env}-private-${count.index}"
